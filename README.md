@@ -1,3 +1,3 @@
-# Clump
+# Handshake
 
-clumping memory together or something
+Symmetric linear channels.
