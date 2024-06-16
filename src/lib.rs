@@ -1,7 +1,9 @@
-use std::{cell::UnsafeCell, ptr::NonNull, sync::OnceLock};
+use std::{cell::UnsafeCell, fmt::Debug, ptr::NonNull, sync::OnceLock};
 
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Canceled;
 
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
 pub struct Handshake<T> {
     // NotNull is &
     common: NonNull<OnceLock<UnsafeCell<Option<T>>>>
@@ -43,7 +45,7 @@ impl<T> Handshake<T> {
         let res = unsafe { self.common.as_ref() }.get_or_init(||
             UnsafeCell::new(Some(value.take().unwrap()))
         );
-        value.map_or(Ok(Ok(())), |value| {
+        if let Some(value) = value {
             // value present, lock inhabited
             if unsafe { &*res.get() }.is_none() {
                 // handshake was cancelled
@@ -53,7 +55,10 @@ impl<T> Handshake<T> {
             } else {
                 Ok(Err((self, value)))
             }
-        })
+        } else {
+            std::mem::forget(self);
+            Ok(Ok(()))
+        }
     }
 
     pub fn try_pull(self) -> Result<Result<T, Self>, Canceled> {
@@ -76,6 +81,11 @@ impl<T> Handshake<T> {
             Ok(Err(self))
         }
     }
+
+    pub fn is_set(&self) -> bool {
+        // access safe lock
+        unsafe { self.common.as_ref() }.get().is_some()
+    }
 }
 
 impl<T> Drop for Handshake<T> {
@@ -95,3 +105,133 @@ impl<T> Drop for Handshake<T> {
 unsafe impl<T: Send> Sync for Handshake<T> {}
 
 unsafe impl<T: Send> Send for Handshake<T> {}
+
+impl<T: Debug> Debug for Handshake<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // access safe lock
+        f.debug_struct("Handshake").field("common", unsafe { self.common.as_ref() }).finish()
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::convert::identity;
+
+    use crate::{Canceled, Handshake};
+
+    #[test]
+    fn drop_test() {
+        let (u, v) = Handshake::<()>::new();
+        drop(u);
+        drop(v);
+
+        let (u, v) = Handshake::<()>::new();
+        drop(v);
+        drop(u)
+    }
+
+    #[test]
+    fn pull_test() {
+        let (u, v) = Handshake::<()>::new();
+        assert_eq!(u.try_pull(), Ok(Err(v)));
+
+        let (u, v) = Handshake::<()>::new();
+        assert_eq!(v.try_pull(), Ok(Err(u)))
+    }
+
+    #[test]
+    fn push_test() {
+        let (u, v) = Handshake::<()>::new();
+        assert_eq!(u.try_push(()), Ok(Ok(())));
+        drop(v);
+
+        let (u, v) = Handshake::<()>::new();
+        assert_eq!(v.try_push(()), Ok(Ok(())));
+        drop(u)
+    }
+
+    #[test]
+    fn double_push_test() {
+        let (u, v) = Handshake::<()>::new();
+        u.try_push(()).unwrap().unwrap();
+        drop(v.try_push(()).unwrap().err().unwrap());
+
+        let (u, v) = Handshake::<()>::new();
+        v.try_push(()).unwrap().unwrap();
+        drop(u.try_push(()).unwrap().err().unwrap())
+    }
+
+    #[test]
+    fn pull_cancel_test() {
+        let (u, v) = Handshake::<()>::new();
+        drop(u);
+        assert_eq!(v.try_pull(), Err(Canceled));
+
+        let (u, v) = Handshake::<()>::new();
+        drop(v);
+        assert_eq!(u.try_pull(), Err(Canceled));
+    }
+
+    #[test]
+    fn push_cancel_test() {
+        let (u, v) = Handshake::<()>::new();
+        drop(u);
+        assert_eq!(v.try_push(()), Err(()));
+
+        let (u, v) = Handshake::<()>::new();
+        drop(v);
+        assert_eq!(u.try_push(()), Err(()));
+    }
+
+    #[test]
+    fn push_pull_test() {
+        let (u, v) = Handshake::<()>::new();
+        u.try_push(()).unwrap().unwrap();
+        v.try_pull().unwrap().unwrap();
+
+        let (u, v) = Handshake::<()>::new();
+        v.try_push(()).unwrap().unwrap();
+        u.try_pull().unwrap().unwrap()
+    }
+
+    #[test]
+    fn join_test() {
+        let (u, v) = Handshake::<()>::new();
+        assert_eq!(u.join((), |_, _| ()).unwrap(), None);
+        assert_eq!(v.join((), |_, _| ()).unwrap(), Some(()));
+
+        let (u, v) = Handshake::<()>::new();
+        assert_eq!(v.join((), |_, _| ()).unwrap(), None);
+        assert_eq!(u.join((), |_, _| ()).unwrap(), Some(()))
+    }
+
+    #[test]
+    fn join_collision_check() {
+        use rand::prelude::*;
+
+        let mut left: Vec<Handshake<usize>> = vec![];
+        let mut right: Vec<Handshake<usize>> = vec![];
+        for _ in 0..1024 {
+            let (u, v) = Handshake::<usize>::new();
+            left.push(u);
+            right.push(v)
+        }
+        let mut rng = rand::thread_rng();
+        left.shuffle(&mut rng);
+        right.shuffle(&mut rng);
+        let left_thread = std::thread::spawn(|| left
+            .into_iter()
+            .enumerate()
+            .map(|(n, u)| {u.join(n, |x, y| (x, y)).unwrap()})
+            .filter_map(identity).collect::<Vec<(usize, usize)>>()
+        );
+        let right_thread = std::thread::spawn(|| right
+            .into_iter()
+            .enumerate()
+            .map(|(n, v)| {v.join(n, |x, y| (x, y)).unwrap()})
+            .filter_map(identity).collect::<Vec<(usize, usize)>>()
+        );
+        let total = left_thread.join().unwrap().len() + right_thread.join().unwrap().len();
+        assert_eq!(total, 1024)
+    }
+}
