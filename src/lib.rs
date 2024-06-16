@@ -1,104 +1,174 @@
-use std::{cell::UnsafeCell, fmt::Debug, ptr::NonNull, sync::OnceLock};
+use std::{fmt::Debug, mem::MaybeUninit, ptr::NonNull, sync::Mutex};
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Canceled;
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+pub struct Cancelled;
+
+enum Inner<T> {
+    Unset,
+    Set(T),
+    Dropped(Cancelled),
+}
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 pub struct Handshake<T> {
-    // NotNull is & unless deduced otherwise
-    common: NonNull<OnceLock<UnsafeCell<Option<T>>>>
+    common: NonNull<Mutex<MaybeUninit<Inner<T>>>>
 }
 
 impl<T> Handshake<T> {
     pub fn new() -> (Handshake<T>, Handshake<T>) {
         // check expected to be elided during compilation
         let common = unsafe { NonNull::new_unchecked(Box::into_raw(
-            Box::new(OnceLock::new())
+            Box::new(Mutex::new(MaybeUninit::new(Inner::Unset)))
         ))};
         (Handshake {common}, Handshake {common})
     }
 
-    pub fn join<U, F: FnOnce(T, T) -> U>(self, value: T, f: F) -> Result<Option<U>, Canceled> {
-        let mut value = Some(value);
-        // access safe lock
-        let res = unsafe { self.common.as_ref() }.get_or_init(||
-            UnsafeCell::new(Some(value.take().unwrap()))
-        );
-        let combined = value.map_or(Ok(None), |value| {
-            // unique access if value present
-            let combined = unsafe { &mut*res.get() }
-                .take()
-                .map_or(Err(Canceled), |other| {
-                    Ok(Some((f)(other, value)))
-                });
+    pub fn join<U, F: FnOnce(T, T) -> U>(self, value: T, f: F) -> Result<Option<U>, Cancelled> {
+        let common = self.common;
+        let last;
+        let res = '_lock: {
+            let mut lock = unsafe { self.common.as_ref() }.lock().unwrap();
+            let (res, inner) = match unsafe {
+                std::mem::replace(&mut*lock, MaybeUninit::uninit()).assume_init()
+            } {
+                Inner::Unset => {
+                    // consumes `self`
+                    std::mem::forget(self);
+                    last = false;
+                    (Ok(None), Inner::Set(value))
+                },
+                Inner::Set(other) => {
+                    // consumes `self`
+                    std::mem::forget(self);
+                    last = true;
+                    (Ok(Some((other, value))), Inner::Unset)
+                },
+                Inner::Dropped(cancel) => {
+                    // consumes `self`
+                    std::mem::forget(self);
+                    last = true;
+                    (Err(cancel), Inner::Dropped(cancel))
+                },
+            };
+            std::mem::swap(&mut*lock, &mut MaybeUninit::new(inner));
+            res
+        };
+        if last {
             // last reference, drop pointer
-            drop(unsafe { Box::from_raw(self.common.as_ptr()) });
-            combined
-        });
-        std::mem::forget(self); // consumes `self`
-        combined
+            drop(unsafe { Box::from_raw(common.as_ptr()) });
+        };
+        res.map(|opt| opt.map(|(x, y)| (f)(x, y)))
     }
 
     pub fn try_push(self, value: T) -> Result<Result<(), (Self, T)>, T> {
-        let mut value = Some(value);
-        // access safe lock
-        let res = unsafe { self.common.as_ref() }.get_or_init(||
-            UnsafeCell::new(Some(value.take().unwrap()))
-        );
-        if let Some(value) = value {
-            // value present, lock inhabited
-            if unsafe { &*res.get() }.is_none() {
-                // handshake was cancelled
-                drop(unsafe { Box::from_raw(self.common.as_ptr()) });
-                std::mem::forget(self); // consumes `self`
-                Err(value)
-            } else {
-                Ok(Err((self, value)))
-            }
-        } else {
-            std::mem::forget(self); // consumes `self`
-            Ok(Ok(()))
-        }
+        let common = self.common;
+        let last;
+        let res = '_lock: {
+            let mut lock = unsafe { common.as_ref() }.lock().unwrap();
+            let (res, inner) = match unsafe {
+                std::mem::replace(&mut*lock, MaybeUninit::uninit()).assume_init()
+            } {
+                Inner::Unset => {
+                    // consumes `self`
+                    std::mem::forget(self);
+                    last = false;
+                    (Ok(Ok(())), Inner::Set(value))
+                },
+                Inner::Set(other) => {
+                    last = false;
+                    (Ok(Err((self, value))), Inner::Set(other))
+                },
+                Inner::Dropped(cancel) => {
+                    // consumes `self`
+                    std::mem::forget(self);
+                    last = true;
+                    (Err(value), Inner::Dropped(cancel))
+                },
+            };
+            std::mem::swap(&mut*lock, &mut MaybeUninit::new(inner));
+            res
+        };
+        if last {
+            // last reference, drop pointer
+            drop(unsafe { Box::from_raw(common.as_ptr()) });
+        };
+        res
     }
 
-    pub fn try_pull(self) -> Result<Result<T, Self>, Canceled> {
-        // access safe lock
-        if let Some(res) = unsafe { self.common.as_ref() }.get() {
-            // unique access if value present
-            if let Some(value) = unsafe { &mut*res.get() }.take() {
-                // last reference, drop pointer
-                drop(unsafe { Box::from_raw(self.common.as_ptr()) });
-                std::mem::forget(self); // consumes `self`
-                Ok(Ok(value))
-            } else {
-                // handshake was cancelled
-                drop(unsafe { Box::from_raw(self.common.as_ptr()) });
-                std::mem::forget(self); // consumes `self`
-                Err(Canceled)
-            }
-
-        } else {
-            Ok(Err(self))
-        }
+    pub fn try_pull(self) -> Result<Result<T, Self>, Cancelled> {
+        let common = self.common;
+        let last;
+        let res = '_lock: {
+            let mut lock = unsafe { self.common.as_ref() }.lock().unwrap();
+            let (res, inner) = match unsafe {
+                std::mem::replace(&mut*lock, MaybeUninit::uninit()).assume_init()
+            } {
+                Inner::Unset => {
+                    last = false;
+                    (Ok(Err(self)), Inner::Unset)
+                },
+                Inner::Set(value) => {
+                    // consumes `self`
+                    std::mem::forget(self);
+                    last = true;
+                    (Ok(Ok(value)), Inner::Unset)
+                },
+                Inner::Dropped(cancel) => {
+                    // consumes `self`
+                    std::mem::forget(self);
+                    last = true;
+                    (Err(cancel), Inner::Dropped(cancel))
+                },
+            };
+            std::mem::swap(&mut*lock, &mut MaybeUninit::new(inner));
+            res
+        };
+        if last {
+            // last reference, drop pointer
+            drop(unsafe { Box::from_raw(common.as_ptr()) });
+        };
+        res
     }
 
-    pub fn is_set(&self) -> bool {
-        // access safe lock
-        unsafe { self.common.as_ref() }.get().is_some()
+    pub fn is_set(&self) -> Result<bool, Cancelled> {
+        '_lock: {
+            match unsafe { self.common.as_ref().lock().unwrap().assume_init_ref() } {
+                Inner::Unset => Ok(false),
+                Inner::Set(_) => Ok(true),
+                Inner::Dropped(cancel) => Err(*cancel),
+            }
+        }
     }
 }
 
 impl<T> Drop for Handshake<T> {
     fn drop(&mut self) {
-        let mut canceled = false;
-        // access safe lock
-        let _ = unsafe { self.common.as_ref() }.get_or_init(|| {
-            canceled = true;
-            UnsafeCell::new(None)
-        });
-        if canceled { return; }; // handshake cancelled
-        // otherwise last reference, drop pointer
-        drop(unsafe { Box::from_raw(self.common.as_ptr()) });
+        let last;
+        '_lock: {
+            let mut lock = unsafe { self.common.as_ref() }.lock().unwrap();
+            let inner = match unsafe {
+                std::mem::replace(&mut*lock, MaybeUninit::uninit()).assume_init()
+            } {
+                Inner::Unset => {
+                    last = false;
+                    Inner::Dropped(Cancelled)
+                },
+                Inner::Set(value) => {
+                    drop(value);
+                    last = true;
+                    Inner::Unset
+                },
+                Inner::Dropped(cancel) => {
+                    last = true;
+                    Inner::Dropped(cancel)
+                },
+            };
+            std::mem::swap(&mut*lock, &mut MaybeUninit::new(inner))
+        };
+        if last {
+            // last reference, drop pointer
+            drop(unsafe { Box::from_raw(self.common.as_ptr()) });
+        };
     }
 }
 
@@ -117,7 +187,7 @@ impl<T: Debug> Debug for Handshake<T> {
 mod test {
     use std::convert::identity;
 
-    use crate::{Canceled, Handshake};
+    use crate::{Cancelled, Handshake};
 
     #[test]
     fn drop_test() {
@@ -186,11 +256,11 @@ mod test {
     fn pull_cancel_test() {
         let (u, v) = Handshake::<()>::new();
         drop(u);
-        assert_eq!(v.try_pull(), Err(Canceled));
+        assert_eq!(v.try_pull(), Err(Cancelled));
 
         let (u, v) = Handshake::<()>::new();
         drop(v);
-        assert_eq!(u.try_pull(), Err(Canceled));
+        assert_eq!(u.try_pull(), Err(Cancelled));
     }
 
     #[test]
@@ -227,11 +297,6 @@ mod test {
     }
 
     #[test]
-    // Due to the innefective `OnceLock` API and
-    // the requirement to keep `self` around for either `std::mem::forget(self)` or return
-    // there is a break in aliasing rules as a `&` is coexisting with a `&mut` (even though the `&` is not used).
-    // This means that these functions (join, try_push, try_pull) do not pass tests involving miri,
-    // however it would appear they are still perfectly safe.
     fn collision_check() {
         use rand::prelude::*;
         const N: usize = 64;
