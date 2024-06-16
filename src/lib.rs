@@ -29,7 +29,7 @@ impl<T> Handshake<T> {
             let combined = unsafe { &mut*res.get() }
                 .take()
                 .map_or(Err(Canceled), |other| {
-                    Ok(Some((f)(value, other)))
+                    Ok(Some((f)(other, value)))
                 });
             // last reference, drop pointer
             drop(unsafe { Box::from_raw(self.common.as_ptr()) });
@@ -229,7 +229,7 @@ mod test {
     #[test]
     // Due to the innefective `OnceLock` API and
     // the requirement to keep `self` around for either `std::mem::forget(self)` or return
-    // creates a break in aliasing rules as a `&` is coexisting with a `&mut` (even though the `&` is not used).
+    // there is a break in aliasing rules as a `&` is coexisting with a `&mut` (even though the `&` is not used).
     // This means that these functions (join, try_push, try_pull) do not pass tests involving miri,
     // however it would appear they are still perfectly safe.
     fn collision_check() {
