@@ -1,3 +1,3 @@
 # Handshake
 
-Symmetric linear channels.
+Symmetric one time use channels.
