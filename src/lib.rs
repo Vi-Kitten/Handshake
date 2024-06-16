@@ -5,7 +5,7 @@ pub struct Canceled;
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 pub struct Handshake<T> {
-    // NotNull is &
+    // NotNull is & unless deduced otherwise
     common: NonNull<OnceLock<UnsafeCell<Option<T>>>>
 }
 
@@ -35,7 +35,7 @@ impl<T> Handshake<T> {
             drop(unsafe { Box::from_raw(self.common.as_ptr()) });
             combined
         });
-        std::mem::forget(self);
+        std::mem::forget(self); // consumes `self`
         combined
     }
 
@@ -50,13 +50,13 @@ impl<T> Handshake<T> {
             if unsafe { &*res.get() }.is_none() {
                 // handshake was cancelled
                 drop(unsafe { Box::from_raw(self.common.as_ptr()) });
-                std::mem::forget(self);
+                std::mem::forget(self); // consumes `self`
                 Err(value)
             } else {
                 Ok(Err((self, value)))
             }
         } else {
-            std::mem::forget(self);
+            std::mem::forget(self); // consumes `self`
             Ok(Ok(()))
         }
     }
@@ -68,12 +68,12 @@ impl<T> Handshake<T> {
             if let Some(value) = unsafe { &mut*res.get() }.take() {
                 // last reference, drop pointer
                 drop(unsafe { Box::from_raw(self.common.as_ptr()) });
-                std::mem::forget(self);
+                std::mem::forget(self); // consumes `self`
                 Ok(Ok(value))
             } else {
                 // handshake was cancelled
                 drop(unsafe { Box::from_raw(self.common.as_ptr()) });
-                std::mem::forget(self);
+                std::mem::forget(self); // consumes `self`
                 Err(Canceled)
             }
 
@@ -128,6 +128,27 @@ mod test {
         let (u, v) = Handshake::<()>::new();
         drop(v);
         drop(u)
+    }
+
+    #[test]
+    fn push_drop_test() {
+        #[derive(Debug)]
+        struct Loud<'a> {
+            flag: &'a mut bool
+        }
+
+        impl<'a> Drop for Loud<'a> {
+            fn drop(&mut self) {
+                *self.flag = true;
+            }
+        }
+
+        let mut dropped = false;
+        let (u, v) = Handshake::<Loud>::new();
+        u.try_push(Loud { flag: &mut dropped }).unwrap().unwrap();
+        drop(v);
+
+        assert_eq!(dropped, true);
     }
 
     #[test]
@@ -206,12 +227,18 @@ mod test {
     }
 
     #[test]
-    fn join_collision_check() {
+    // Due to the innefective `OnceLock` API and
+    // the requirement to keep `self` around for either `std::mem::forget(self)` or return
+    // creates a break in aliasing rules as a `&` is coexisting with a `&mut` (even though the `&` is not used).
+    // This means that these functions (join, try_push, try_pull) do not pass tests involving miri,
+    // however it would appear they are still perfectly safe.
+    fn collision_check() {
         use rand::prelude::*;
+        const N: usize = 64;
 
         let mut left: Vec<Handshake<usize>> = vec![];
         let mut right: Vec<Handshake<usize>> = vec![];
-        for _ in 0..1024 {
+        for _ in 0..N {
             let (u, v) = Handshake::<usize>::new();
             left.push(u);
             right.push(v)
@@ -232,6 +259,6 @@ mod test {
             .filter_map(identity).collect::<Vec<(usize, usize)>>()
         );
         let total = left_thread.join().unwrap().len() + right_thread.join().unwrap().len();
-        assert_eq!(total, 1024)
+        assert_eq!(total, N)
     }
 }
