@@ -1,141 +1,257 @@
-use std::{fmt::Debug, mem::MaybeUninit, ptr::NonNull, sync::Mutex};
+use std::{fmt::Debug, ptr::NonNull, sync::Mutex};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub struct Cancelled;
 
+#[derive(Debug)]
 enum Inner<T> {
     Unset,
-    Set(T),
-    Dropped(Cancelled),
+    Set(T)
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 pub struct Handshake<T> {
-    common: NonNull<Mutex<MaybeUninit<Inner<T>>>>
+    common: NonNull<Mutex<Option<Inner<T>>>>
 }
 
-impl<T> Handshake<T> {
-    pub fn new() -> (Handshake<T>, Handshake<T>) {
-        // check expected to be elided during compilation
-        let common = unsafe { NonNull::new_unchecked(Box::into_raw(
-            Box::new(Mutex::new(MaybeUninit::new(Inner::Unset)))
-        ))};
-        (Handshake {common}, Handshake {common})
-    }
+/// Creates a symmetric one time use channel.
+/// 
+/// Allows each end of the handshake to send or receive information for bi-directional movement of data.
+/// 
+/// # Examples
+/// 
+/// ### Join
+/// 
+/// ```
+/// let (u, v) = handshake::channel::<u8>();
+/// 
+/// '_task_a: {
+///     let fst = u.join(1, std::ops::Add::add).unwrap();
+///     assert_eq!(fst, None)
+/// }
+///
+/// '_task_b: {
+///     let snd = v.join(2, std::ops::Add::add).unwrap();
+///     assert_eq!(snd, Some(3))
+/// }
+/// ```
+/// 
+/// ### Push - Pull
+/// 
+/// ```
+/// let (u, v) = handshake::channel::<u8>();
+/// 
+/// let a = u.try_push(3).unwrap();
+/// assert_eq!(a, Ok(()));
+///
+/// let b = v.try_pull().unwrap();
+/// assert_eq!(b, Ok(3))
+/// ```
+pub fn channel<T>() -> (Handshake<T>, Handshake<T>) {
+    // check expected to be elided during compilation
+    let common = unsafe { NonNull::new_unchecked(Box::into_raw(
+        Box::new(Mutex::new(Some(Inner::Unset)))
+    ))};
+    (Handshake {common}, Handshake {common})
+}
 
-    pub fn join<U, F: FnOnce(T, T) -> U>(self, value: T, f: F) -> Result<Option<U>, Cancelled> {
+
+impl<T> Handshake<T> {
+    /// Pulls and pushes at the same time, garunteeing consumption of `self`.
+    /// 
+    /// If `self` is [`Unset`] `f` will not be ran and `value` will be stored returning `Ok(None)`,
+    /// if `self` is [`Set`] with some `other` instance then `f` will be called with `other` and `value`
+    /// returning `Ok(return_value)`.
+    /// 
+    /// Otherwise on cancellation `Err(value)` will be returned.
+    /// 
+    /// If you only need to send or receive `value`, instead call [`try_push`] or [`try_pull`] respectively.
+    /// 
+    /// [`try_push`]: Handshake::try_push
+    /// [`try_pull`]: Handshake::try_pull
+    /// 
+    /// # Example
+    /// 
+    /// ```
+    /// let (u, v) = handshake::channel::<u8>();
+    /// 
+    /// '_task_a: {
+    ///     let fst = u.join(1, std::ops::Add::add).unwrap();
+    ///     assert_eq!(fst, None)
+    /// }
+    ///
+    /// '_task_b: {
+    ///     let snd = v.join(2, std::ops::Add::add).unwrap();
+    ///     assert_eq!(snd, Some(3))
+    /// }
+    /// ```
+    pub fn join<U, F: FnOnce(T, T) -> U>(self, value: T, f: F) -> Result<Option<U>, T> {
         let common = self.common;
         let last;
         let res = '_lock: {
-            let mut lock = unsafe { self.common.as_ref() }.lock().unwrap();
-            let (res, inner) = match unsafe {
-                std::mem::replace(&mut*lock, MaybeUninit::uninit()).assume_init()
-            } {
-                Inner::Unset => {
+            let mut lock = unsafe { common.as_ref() }.lock().unwrap();
+            match lock.take() {
+                Some(Inner::Unset) => {
                     // consumes `self`
                     std::mem::forget(self);
                     last = false;
-                    (Ok(None), Inner::Set(value))
+                    let _ = lock.insert(Inner::Set(value));
+                    Ok(None)
                 },
-                Inner::Set(other) => {
+                Some(Inner::Set(other)) => {
                     // consumes `self`
                     std::mem::forget(self);
                     last = true;
-                    (Ok(Some((other, value))), Inner::Unset)
+                    let _ = lock.insert(Inner::Unset);
+                    Ok(Some((other, value)))
                 },
-                Inner::Dropped(cancel) => {
+                None => {
                     // consumes `self`
                     std::mem::forget(self);
                     last = true;
-                    (Err(cancel), Inner::Dropped(cancel))
+                    Err(value)
                 },
-            };
-            std::mem::swap(&mut*lock, &mut MaybeUninit::new(inner));
-            res
+            }
         };
         if last {
             // last reference, drop pointer
-            drop(unsafe { Box::from_raw(common.as_ptr()) });
+            drop(unsafe { Box::from_raw(common.as_ptr()) })
         };
+        // isolate potential panic
         res.map(|opt| opt.map(|(x, y)| (f)(x, y)))
     }
 
+    /// Attempts to send a value through the channel.
+    /// 
+    /// If `self` is [`Unset`] `value` will be stored returning `Ok(Ok(()))`,
+    /// if `self` is [`Set`] with some `other` instance then pushing will fail
+    /// and `Ok(Err((self, value)))` will be returned.
+    /// 
+    /// Otherwise on cancellation `Err(value)` will be returned.
+    /// 
+    /// If you are handling `value` symetrically, consider calling [`join`].
+    /// 
+    /// [`join`]: Handshake::join
+    /// 
+    /// # Example
+    /// 
+    /// ```
+    /// let (u, v) = handshake::channel::<u8>();
+    /// 
+    /// let a = u.try_push(3).unwrap();
+    /// assert_eq!(a, Ok(()));
+    ///
+    /// let b = v.try_pull().unwrap();
+    /// assert_eq!(b, Ok(3))
+    /// ```
     pub fn try_push(self, value: T) -> Result<Result<(), (Self, T)>, T> {
         let common = self.common;
         let last;
         let res = '_lock: {
             let mut lock = unsafe { common.as_ref() }.lock().unwrap();
-            let (res, inner) = match unsafe {
-                std::mem::replace(&mut*lock, MaybeUninit::uninit()).assume_init()
-            } {
-                Inner::Unset => {
+            match lock.take() {
+                Some(Inner::Unset) => {
                     // consumes `self`
                     std::mem::forget(self);
                     last = false;
-                    (Ok(Ok(())), Inner::Set(value))
+                    let _ = lock.insert(Inner::Set(value));
+                    Ok(Ok(()))
                 },
-                Inner::Set(other) => {
+                Some(Inner::Set(other)) => {
                     last = false;
-                    (Ok(Err((self, value))), Inner::Set(other))
+                    let _ = lock.insert(Inner::Set(other));
+                    Ok(Err((self, value)))
                 },
-                Inner::Dropped(cancel) => {
+                None => {
                     // consumes `self`
                     std::mem::forget(self);
                     last = true;
-                    (Err(value), Inner::Dropped(cancel))
+                    Err(value)
                 },
-            };
-            std::mem::swap(&mut*lock, &mut MaybeUninit::new(inner));
-            res
+            }
         };
         if last {
             // last reference, drop pointer
-            drop(unsafe { Box::from_raw(common.as_ptr()) });
+            drop(unsafe { Box::from_raw(common.as_ptr()) })
         };
         res
     }
 
+    /// Attempts to receive a value through the channel.
+    /// 
+    /// If `self` is [`Unset`] then pulling will fail returning `Ok(Err(self))`,
+    /// if `self` is [`Set`] with some `value` then `Ok(Ok(value))` will be returned.
+    /// 
+    /// Otherwise on cancellation `Err(Cancelled)` will be returned.
+    /// 
+    /// If you are handling `value` symetrically, consider calling [`join`].
+    /// 
+    /// [`join`]: Handshake::join
+    /// 
+    /// # Example
+    /// 
+    /// ```
+    /// let (u, v) = handshake::channel::<u8>();
+    /// 
+    /// let a = u.try_push(3).unwrap();
+    /// assert_eq!(a, Ok(()));
+    ///
+    /// let b = v.try_pull().unwrap();
+    /// assert_eq!(b, Ok(3))
+    /// ```
     pub fn try_pull(self) -> Result<Result<T, Self>, Cancelled> {
         let common = self.common;
         let last;
         let res = '_lock: {
-            let mut lock = unsafe { self.common.as_ref() }.lock().unwrap();
-            let (res, inner) = match unsafe {
-                std::mem::replace(&mut*lock, MaybeUninit::uninit()).assume_init()
-            } {
-                Inner::Unset => {
+            let mut lock = unsafe { common.as_ref() }.lock().unwrap();
+            match lock.take() {
+                Some(Inner::Unset) => {
                     last = false;
-                    (Ok(Err(self)), Inner::Unset)
+                    let _ = lock.insert(Inner::Unset);
+                    Ok(Err(self))
                 },
-                Inner::Set(value) => {
+                Some(Inner::Set(value)) => {
                     // consumes `self`
                     std::mem::forget(self);
                     last = true;
-                    (Ok(Ok(value)), Inner::Unset)
+                    let _ = lock.insert(Inner::Unset);
+                    Ok(Ok(value))
                 },
-                Inner::Dropped(cancel) => {
+                None => {
                     // consumes `self`
                     std::mem::forget(self);
                     last = true;
-                    (Err(cancel), Inner::Dropped(cancel))
+                    Err(Cancelled)
                 },
-            };
-            std::mem::swap(&mut*lock, &mut MaybeUninit::new(inner));
-            res
+            }
         };
         if last {
             // last reference, drop pointer
-            drop(unsafe { Box::from_raw(common.as_ptr()) });
+            drop(unsafe { Box::from_raw(common.as_ptr()) })
         };
         res
     }
 
+    /// Checks the channel to see if there is a value present.
+    /// 
+    /// If the channel is cancelled then `Err(Cancelled)` will be returned, otherwise
+    /// a boolean value will be returned indicating whether or not the channel is set.
+    /// 
+    /// # Example
+    /// 
+    /// ```
+    /// let (u, v) = handshake::channel::<u8>();
+    /// 
+    /// assert_eq!(v.is_set().unwrap(), false);
+    /// let _ = u.try_push(3).unwrap();
+    /// assert_eq!(v.is_set().unwrap(), true)
+    /// ```
     pub fn is_set(&self) -> Result<bool, Cancelled> {
         '_lock: {
-            match unsafe { self.common.as_ref().lock().unwrap().assume_init_ref() } {
-                Inner::Unset => Ok(false),
-                Inner::Set(_) => Ok(true),
-                Inner::Dropped(cancel) => Err(*cancel),
+            match &mut* unsafe { self.common.as_ref() }.lock().unwrap() {
+                Some(Inner::Unset) => Ok(false),
+                Some(Inner::Set(_)) => Ok(true),
+                None => Err(Cancelled),
             }
         }
     }
@@ -143,32 +259,14 @@ impl<T> Handshake<T> {
 
 impl<T> Drop for Handshake<T> {
     fn drop(&mut self) {
-        let last;
-        '_lock: {
-            let mut lock = unsafe { self.common.as_ref() }.lock().unwrap();
-            let inner = match unsafe {
-                std::mem::replace(&mut*lock, MaybeUninit::uninit()).assume_init()
-            } {
-                Inner::Unset => {
-                    last = false;
-                    Inner::Dropped(Cancelled)
-                },
-                Inner::Set(value) => {
-                    drop(value);
-                    last = true;
-                    Inner::Unset
-                },
-                Inner::Dropped(cancel) => {
-                    last = true;
-                    Inner::Dropped(cancel)
-                },
-            };
-            std::mem::swap(&mut*lock, &mut MaybeUninit::new(inner))
-        };
-        if last {
+        if match unsafe { self.common.as_ref() }.lock().unwrap().take() {
+            Some(Inner::Unset) => false,
+            Some(Inner::Set(value)) => { drop(value); true },
+            None => true,
+        } {
             // last reference, drop pointer
-            drop(unsafe { Box::from_raw(self.common.as_ptr()) });
-        };
+            drop(unsafe { Box::from_raw(self.common.as_ptr()) })
+        }
     }
 }
 
@@ -186,16 +284,15 @@ impl<T: Debug> Debug for Handshake<T> {
 #[cfg(test)]
 mod test {
     use std::convert::identity;
-
-    use crate::{Cancelled, Handshake};
+    use super::*;
 
     #[test]
     fn drop_test() {
-        let (u, v) = Handshake::<()>::new();
+        let (u, v) = super::channel::<()>();
         drop(u);
         drop(v);
 
-        let (u, v) = Handshake::<()>::new();
+        let (u, v) = super::channel::<()>();
         drop(v);
         drop(u)
     }
@@ -214,7 +311,7 @@ mod test {
         }
 
         let mut dropped = false;
-        let (u, v) = Handshake::<Loud>::new();
+        let (u, v) = super::channel::<Loud>();
         u.try_push(Loud { flag: &mut dropped }).unwrap().unwrap();
         drop(v);
 
@@ -223,75 +320,75 @@ mod test {
 
     #[test]
     fn pull_test() {
-        let (u, v) = Handshake::<()>::new();
+        let (u, v) = super::channel::<()>();
         assert_eq!(u.try_pull(), Ok(Err(v)));
 
-        let (u, v) = Handshake::<()>::new();
+        let (u, v) = super::channel::<()>();
         assert_eq!(v.try_pull(), Ok(Err(u)))
     }
 
     #[test]
     fn push_test() {
-        let (u, v) = Handshake::<()>::new();
+        let (u, v) = super::channel::<()>();
         assert_eq!(u.try_push(()), Ok(Ok(())));
         drop(v);
 
-        let (u, v) = Handshake::<()>::new();
+        let (u, v) = super::channel::<()>();
         assert_eq!(v.try_push(()), Ok(Ok(())));
         drop(u)
     }
 
     #[test]
     fn double_push_test() {
-        let (u, v) = Handshake::<()>::new();
+        let (u, v) = super::channel::<()>();
         u.try_push(()).unwrap().unwrap();
         drop(v.try_push(()).unwrap().err().unwrap());
 
-        let (u, v) = Handshake::<()>::new();
+        let (u, v) = super::channel::<()>();
         v.try_push(()).unwrap().unwrap();
         drop(u.try_push(()).unwrap().err().unwrap())
     }
 
     #[test]
     fn pull_cancel_test() {
-        let (u, v) = Handshake::<()>::new();
+        let (u, v) = super::channel::<()>();
         drop(u);
         assert_eq!(v.try_pull(), Err(Cancelled));
 
-        let (u, v) = Handshake::<()>::new();
+        let (u, v) = super::channel::<()>();
         drop(v);
         assert_eq!(u.try_pull(), Err(Cancelled));
     }
 
     #[test]
     fn push_cancel_test() {
-        let (u, v) = Handshake::<()>::new();
+        let (u, v) = super::channel::<()>();
         drop(u);
         assert_eq!(v.try_push(()), Err(()));
 
-        let (u, v) = Handshake::<()>::new();
+        let (u, v) = super::channel::<()>();
         drop(v);
         assert_eq!(u.try_push(()), Err(()));
     }
 
     #[test]
     fn push_pull_test() {
-        let (u, v) = Handshake::<()>::new();
+        let (u, v) = super::channel::<()>();
         u.try_push(()).unwrap().unwrap();
         v.try_pull().unwrap().unwrap();
 
-        let (u, v) = Handshake::<()>::new();
+        let (u, v) = super::channel::<()>();
         v.try_push(()).unwrap().unwrap();
         u.try_pull().unwrap().unwrap()
     }
 
     #[test]
     fn join_test() {
-        let (u, v) = Handshake::<()>::new();
+        let (u, v) = super::channel::<()>();
         assert_eq!(u.join((), |_, _| ()).unwrap(), None);
         assert_eq!(v.join((), |_, _| ()).unwrap(), Some(()));
 
-        let (u, v) = Handshake::<()>::new();
+        let (u, v) = super::channel::<()>();
         assert_eq!(v.join((), |_, _| ()).unwrap(), None);
         assert_eq!(u.join((), |_, _| ()).unwrap(), Some(()))
     }
@@ -304,7 +401,7 @@ mod test {
         let mut left: Vec<Handshake<usize>> = vec![];
         let mut right: Vec<Handshake<usize>> = vec![];
         for _ in 0..N {
-            let (u, v) = Handshake::<usize>::new();
+            let (u, v) = super::channel::<usize>();
             left.push(u);
             right.push(v)
         }

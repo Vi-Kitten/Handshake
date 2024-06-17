@@ -1,7 +1,5 @@
-use handshake::Handshake;
-
 fn main() {
-    let (u, v) = Handshake::<Box<str>>::new();
+    let (u, v) = handshake::channel::<Box<str>>();
     let combine = |x, y| format!("{} {}!", x, y);
 
     '_task_a: {
