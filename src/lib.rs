@@ -19,7 +19,7 @@ enum Inner<T> {
 /// Using [`join`]:
 /// 
 /// ```
-/// let (u, v) = handshake::channel::<u8>();
+/// let (u, v) = oneshot_handshake::channel::<u8>();
 /// 
 /// '_task_a: {
 ///     let fst = u.join(1, std::ops::Add::add).unwrap();
@@ -35,7 +35,7 @@ enum Inner<T> {
 /// Using [`push`] and [`pull`]:
 /// 
 /// ```
-/// let (u, v) = handshake::channel::<u8>();
+/// let (u, v) = oneshot_handshake::channel::<u8>();
 /// 
 /// let a = u.try_push(3).unwrap();
 /// assert_eq!(a, Ok(()));
@@ -61,7 +61,7 @@ pub struct Handshake<T> {
 /// Using [`join`]:
 /// 
 /// ```
-/// let (u, v) = handshake::channel::<u8>();
+/// let (u, v) = oneshot_handshake::channel::<u8>();
 /// 
 /// '_task_a: {
 ///     let fst = u.join(1, std::ops::Add::add).unwrap();
@@ -77,7 +77,7 @@ pub struct Handshake<T> {
 /// Using [`push`] and [`pull`]:
 /// 
 /// ```
-/// let (u, v) = handshake::channel::<u8>();
+/// let (u, v) = oneshot_handshake::channel::<u8>();
 /// 
 /// let a = u.try_push(3).unwrap();
 /// assert_eq!(a, Ok(()));
@@ -115,7 +115,7 @@ impl<T> Handshake<T> {
     /// # Example
     /// 
     /// ```
-    /// let (u, v) = handshake::channel::<u8>();
+    /// let (u, v) = oneshot_handshake::channel::<u8>();
     /// 
     /// '_task_a: {
     ///     let fst = u.join(1, std::ops::Add::add).unwrap();
@@ -178,7 +178,7 @@ impl<T> Handshake<T> {
     /// # Example
     /// 
     /// ```
-    /// let (u, v) = handshake::channel::<u8>();
+    /// let (u, v) = oneshot_handshake::channel::<u8>();
     /// 
     /// let a = u.try_push(3).unwrap();
     /// assert_eq!(a, Ok(()));
@@ -233,7 +233,7 @@ impl<T> Handshake<T> {
     /// # Example
     /// 
     /// ```
-    /// let (u, v) = handshake::channel::<u8>();
+    /// let (u, v) = oneshot_handshake::channel::<u8>();
     /// 
     /// let a = u.try_push(3).unwrap();
     /// assert_eq!(a, Ok(()));
@@ -282,7 +282,7 @@ impl<T> Handshake<T> {
     /// # Example
     /// 
     /// ```
-    /// let (u, v) = handshake::channel::<u8>();
+    /// let (u, v) = oneshot_handshake::channel::<u8>();
     /// 
     /// assert_eq!(v.is_set().unwrap(), false);
     /// let _ = u.try_push(3).unwrap();
