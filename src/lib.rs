@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 use std::{fmt::Debug, ptr::NonNull, sync::Mutex};
 
 /// An empty struct signalling cancellation for [`Handshake`].
@@ -32,7 +33,7 @@ enum Inner<T> {
 /// }
 /// ```
 /// 
-/// Using [`push`] and [`pull`]:
+/// Using [`try_push`] and [`try_pull`]:
 /// 
 /// ```
 /// let (u, v) = oneshot_handshake::channel::<u8>();
@@ -74,7 +75,7 @@ pub struct Handshake<T> {
 /// }
 /// ```
 /// 
-/// Using [`push`] and [`pull`]:
+/// Using [`try_push`] and [`try_pull`]:
 /// 
 /// ```
 /// let (u, v) = oneshot_handshake::channel::<u8>();
@@ -111,6 +112,9 @@ impl<T> Handshake<T> {
     /// 
     /// [`try_push`]: Handshake::try_push
     /// [`try_pull`]: Handshake::try_pull
+    /// 
+    /// [`Set`]: Handshake::Set
+    /// [`Unset`]: Handshake::Unset
     /// 
     /// # Example
     /// 
@@ -175,6 +179,9 @@ impl<T> Handshake<T> {
     /// 
     /// [`join`]: Handshake::join
     /// 
+    /// [`Set`]: Handshake::Set
+    /// [`Unset`]: Handshake::Unset
+    /// 
     /// # Example
     /// 
     /// ```
@@ -229,6 +236,9 @@ impl<T> Handshake<T> {
     /// If you are handling `value` symetrically, consider calling [`join`].
     /// 
     /// [`join`]: Handshake::join
+    /// 
+    /// [`Set`]: Handshake::Set
+    /// [`Unset`]: Handshake::Unset
     /// 
     /// # Example
     /// 
