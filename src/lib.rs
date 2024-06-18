@@ -326,16 +326,23 @@ impl<T> Handshake<T> {
 /// 
 /// ```
 /// enum MyRecursiveType {
-///     Channel(oneshot_handshake::Handshake<MyRecursiveType>), // recursive drop for nested `Channel`
+///     // recursive channel
+///     Channel(std::mem::ManuallyDrop<oneshot_handshake::Handshake<MyRecursiveType>>),
 ///     Data(Box<[u8]>)
 /// }
 /// 
-/// // a recursive drop implementaiton is unavoidable
-/// fn custom_drop(obj: MyRecursiveType) {
-///     match obj {
-///         MyRecursiveType::Channel(channel) => std::mem::drop(channel), // forced to call `Drop::drop` to garuntee consumption
-///         MyRecursiveType::Data(data) => std::mem::drop(data)
-///     };
+/// impl Drop for MyRecursiveType {
+///     // a recursive drop implementaiton is unavoidable
+///     fn drop(&mut self) {
+///         match self {
+///             MyRecursiveType::Channel(channel) => {
+///                 let channel = unsafe { std::mem::ManuallyDrop::take(channel) };
+///                 // forced to call `Drop::drop` to garuntee consumption
+///                 std::mem::drop(channel)
+///             },
+///             MyRecursiveType::Data(_) => ()
+///         };
+///     }
 /// }
 /// ```
 /// 
@@ -343,19 +350,32 @@ impl<T> Handshake<T> {
 /// 
 /// ```
 /// enum MyRecursiveType {
-///     Channel(oneshot_handshake::Handshake<MyRecursiveType>), // recursive drop for nested `Channel`
+///     // recursive channel
+///     Channel(std::mem::ManuallyDrop<oneshot_handshake::Handshake<MyRecursiveType>>),
 ///     Data(Box<[u8]>)
 /// }
 /// 
-/// fn custom_drop(obj: MyRecursiveType) {
-///     let mut next = Some(obj);
-///     while let Some(obj) = next.take() {
-///         match obj {
+/// impl Drop for MyRecursiveType {
+///     fn drop(&mut self) {
+///         // handling dropping by ref
+///         match self {
 ///             MyRecursiveType::Channel(channel) => {
-///                 next = oneshot_handshake::take(channel) // avoids recursion
+///                 let channel = unsafe { std::mem::ManuallyDrop::take(channel) };
+///                 // handling dropping by value
+///                 let mut next = oneshot_handshake::take(channel);
+///                 // iterative drop
+///                 while let Some(mut obj) = next.take() {
+///                     match &mut obj {
+///                         MyRecursiveType::Channel(channel) =>
+///                             next = oneshot_handshake::take(unsafe {
+///                                 std::mem::ManuallyDrop::take(channel) 
+///                             }), // avoids recursion
+///                         MyRecursiveType::Data(_) => (),
+///                     }
+///                 }
 ///             },
-///             MyRecursiveType::Data(data) => std::mem::drop(data)
-///         }
+///             MyRecursiveType::Data(_) => ()
+///         };
 ///     }
 /// }
 /// ```
