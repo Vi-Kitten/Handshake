@@ -309,12 +309,58 @@ impl<T> Handshake<T> {
     }
 }
 
-/// Drops like [`Drop::drop`] except the inner `value` is returned if present to avoid recursive dropping.
+/// Pulls a value "now or never" garunteeing consumption of `self`.
+/// The channel will be cancelled if no value is set.
 /// 
-/// Usage of this function to pull values is generally discouraged, unless you are receiving "now or never"
-/// opt to use [`try_pull`] instead.
+/// If you do not handle cancellation on the other side of the handshake
+/// and have no garuntees that both parts will be cancelled in unison then use [`try_pull`] instead.
+/// 
+/// This function is provided as an alternative to [`Drop::drop`]
+/// that prevents blowing the stack from deeply nested channels.
 /// 
 /// [`try_pull`]: Handshake::try_pull
+/// 
+/// # Example
+/// 
+/// Without using [`take`]:
+/// 
+/// ```
+/// enum MyRecursiveType {
+///     Channel(oneshot_handshake::Handshake<MyRecursiveType>), // recursive drop for nested `Channel`
+///     Data(Box<[u8]>)
+/// }
+/// 
+/// // a recursive drop implementaiton is unavoidable
+/// fn custom_drop(obj: MyRecursiveType) {
+///     match obj {
+///         MyRecursiveType::Channel(channel) => std::mem::drop(channel), // forced to call `Drop::drop` to garuntee consumption
+///         MyRecursiveType::Data(data) => std::mem::drop(data)
+///     };
+/// }
+/// ```
+/// 
+/// Using [`take`]:
+/// 
+/// ```
+/// enum MyRecursiveType {
+///     Channel(oneshot_handshake::Handshake<MyRecursiveType>), // recursive drop for nested `Channel`
+///     Data(Box<[u8]>)
+/// }
+/// 
+/// fn custom_drop(obj: MyRecursiveType) {
+///     let mut next = Some(obj);
+///     while let Some(obj) = next.take() {
+///         match obj {
+///             MyRecursiveType::Channel(channel) => {
+///                 next = oneshot_handshake::take(channel) // avoids recursion
+///             },
+///             MyRecursiveType::Data(data) => std::mem::drop(data)
+///         }
+///     }
+/// }
+/// ```
+/// 
+/// [`take`]: oneshot_channel::take
 pub fn take<T>(handshake: Handshake<T>) -> Option<T> {
     let value;
     if match unsafe { handshake.common.as_ref() }.lock().unwrap().take() {
