@@ -379,8 +379,6 @@ impl<T> Handshake<T> {
 ///     }
 /// }
 /// ```
-/// 
-/// [`take`]: oneshot_channel::take
 pub fn take<T>(handshake: Handshake<T>) -> Option<T> {
     let value;
     if match unsafe { handshake.common.as_ref() }.lock().unwrap().take() {
