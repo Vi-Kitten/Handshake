@@ -1,5 +1,8 @@
 use std::{fmt::Debug, ptr::NonNull, sync::Mutex};
 
+/// An empty struct signalling cancellation for [`Handshake`].
+/// 
+/// A [`channel`] can only be cancelled by a call to `Drop::drop` or `take`.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub struct Cancelled;
 
@@ -9,18 +12,11 @@ enum Inner<T> {
     Set(T)
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
-pub struct Handshake<T> {
-    common: NonNull<Mutex<Option<Inner<T>>>>
-}
-
-/// Creates a symmetric one time use channel.
-/// 
-/// Allows each end of the handshake to send or receive information for bi-directional movement of data.
+/// A joint sender and receiver for a symmetric one time use channel.
 /// 
 /// # Examples
 /// 
-/// Using join:
+/// Using [`join`]:
 /// 
 /// ```
 /// let (u, v) = handshake::channel::<u8>();
@@ -36,7 +32,7 @@ pub struct Handshake<T> {
 /// }
 /// ```
 /// 
-/// Using push and pull:
+/// Using [`push`] and [`pull`]:
 /// 
 /// ```
 /// let (u, v) = handshake::channel::<u8>();
@@ -47,6 +43,52 @@ pub struct Handshake<T> {
 /// let b = v.try_pull().unwrap();
 /// assert_eq!(b, Ok(3))
 /// ```
+/// 
+/// [`join`]: Handshake::join
+/// [`try_push`]: Handshake::try_push
+/// [`try_pull`]: Handshake::try_pull
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+pub struct Handshake<T> {
+    common: NonNull<Mutex<Option<Inner<T>>>>
+}
+
+/// Creates a symmetric one time use channel.
+/// 
+/// Allows each end of the handshake to send or receive information for bi-directional movement of data.
+/// 
+/// # Examples
+/// 
+/// Using [`join`]:
+/// 
+/// ```
+/// let (u, v) = handshake::channel::<u8>();
+/// 
+/// '_task_a: {
+///     let fst = u.join(1, std::ops::Add::add).unwrap();
+///     assert_eq!(fst, None)
+/// }
+///
+/// '_task_b: {
+///     let snd = v.join(2, std::ops::Add::add).unwrap();
+///     assert_eq!(snd, Some(3))
+/// }
+/// ```
+/// 
+/// Using [`push`] and [`pull`]:
+/// 
+/// ```
+/// let (u, v) = handshake::channel::<u8>();
+/// 
+/// let a = u.try_push(3).unwrap();
+/// assert_eq!(a, Ok(()));
+///
+/// let b = v.try_pull().unwrap();
+/// assert_eq!(b, Ok(3))
+/// ```
+/// 
+/// [`join`]: Handshake::join
+/// [`try_push`]: Handshake::try_push
+/// [`try_pull`]: Handshake::try_pull
 pub fn channel<T>() -> (Handshake<T>, Handshake<T>) {
     // check expected to be elided during compilation
     let common = unsafe { NonNull::new_unchecked(Box::into_raw(
