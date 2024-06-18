@@ -2,7 +2,7 @@ use std::{fmt::Debug, ptr::NonNull, sync::Mutex};
 
 /// An empty struct signalling cancellation for [`Handshake`].
 /// 
-/// A [`channel`] can only be cancelled by a call to `Drop::drop` or `take`.
+/// A [`channel`] can only be cancelled by a call to [`Drop::drop`] or [`take`].
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub struct Cancelled;
 
@@ -339,7 +339,6 @@ unsafe impl<T: Send> Send for Handshake<T> {}
 
 impl<T: Debug> Debug for Handshake<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // access safe lock
         f.debug_struct("Handshake").field("common", unsafe { self.common.as_ref() }).finish()
     }
 }
