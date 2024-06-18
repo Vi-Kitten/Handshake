@@ -257,6 +257,27 @@ impl<T> Handshake<T> {
     }
 }
 
+/// Drops like [`Drop::drop`] except the inner `value` is returned if present to avoid recursive dropping.
+/// 
+/// Usage of this function to pull values is generally discouraged, unless you are receiving "now or never"
+/// opt to use [`try_pull`] instead.
+/// 
+/// [`try_pull`]: Handshake::try_pull
+pub fn take<T>(handshake: Handshake<T>) -> Option<T> {
+    let value;
+    if match unsafe { handshake.common.as_ref() }.lock().unwrap().take() {
+        Some(Inner::Unset) => { value = None; false },
+        Some(Inner::Set(inner_value)) => { value = Some(inner_value); true },
+        None => {value = None; true },
+    } {
+        // last reference, drop pointer
+        drop(unsafe { Box::from_raw(handshake.common.as_ptr()) })
+    };
+    // avoid double drop
+    std::mem::forget(handshake);
+    value
+}
+
 impl<T> Drop for Handshake<T> {
     fn drop(&mut self) {
         if match unsafe { self.common.as_ref() }.lock().unwrap().take() {
