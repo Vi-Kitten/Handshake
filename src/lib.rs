@@ -350,11 +350,11 @@ mod test {
 
     #[test]
     fn drop_test() {
-        let (u, v) = super::channel::<()>();
+        let (u, v) = channel::<()>();
         drop(u);
         drop(v);
 
-        let (u, v) = super::channel::<()>();
+        let (u, v) = channel::<()>();
         drop(v);
         drop(u)
     }
@@ -373,7 +373,7 @@ mod test {
         }
 
         let mut dropped = false;
-        let (u, v) = super::channel::<Loud>();
+        let (u, v) = channel::<Loud>();
         u.try_push(Loud { flag: &mut dropped }).unwrap().unwrap();
         drop(v);
 
@@ -382,75 +382,75 @@ mod test {
 
     #[test]
     fn pull_test() {
-        let (u, v) = super::channel::<()>();
+        let (u, v) = channel::<()>();
         assert_eq!(u.try_pull(), Ok(Err(v)));
 
-        let (u, v) = super::channel::<()>();
+        let (u, v) = channel::<()>();
         assert_eq!(v.try_pull(), Ok(Err(u)))
     }
 
     #[test]
     fn push_test() {
-        let (u, v) = super::channel::<()>();
+        let (u, v) = channel::<()>();
         assert_eq!(u.try_push(()), Ok(Ok(())));
         drop(v);
 
-        let (u, v) = super::channel::<()>();
+        let (u, v) = channel::<()>();
         assert_eq!(v.try_push(()), Ok(Ok(())));
         drop(u)
     }
 
     #[test]
     fn double_push_test() {
-        let (u, v) = super::channel::<()>();
+        let (u, v) = channel::<()>();
         u.try_push(()).unwrap().unwrap();
         drop(v.try_push(()).unwrap().err().unwrap());
 
-        let (u, v) = super::channel::<()>();
+        let (u, v) = channel::<()>();
         v.try_push(()).unwrap().unwrap();
         drop(u.try_push(()).unwrap().err().unwrap())
     }
 
     #[test]
     fn pull_cancel_test() {
-        let (u, v) = super::channel::<()>();
+        let (u, v) = channel::<()>();
         drop(u);
         assert_eq!(v.try_pull(), Err(Cancelled));
 
-        let (u, v) = super::channel::<()>();
+        let (u, v) = channel::<()>();
         drop(v);
         assert_eq!(u.try_pull(), Err(Cancelled));
     }
 
     #[test]
     fn push_cancel_test() {
-        let (u, v) = super::channel::<()>();
+        let (u, v) = channel::<()>();
         drop(u);
         assert_eq!(v.try_push(()), Err(()));
 
-        let (u, v) = super::channel::<()>();
+        let (u, v) = channel::<()>();
         drop(v);
         assert_eq!(u.try_push(()), Err(()));
     }
 
     #[test]
     fn push_pull_test() {
-        let (u, v) = super::channel::<()>();
+        let (u, v) = channel::<()>();
         u.try_push(()).unwrap().unwrap();
         v.try_pull().unwrap().unwrap();
 
-        let (u, v) = super::channel::<()>();
+        let (u, v) = channel::<()>();
         v.try_push(()).unwrap().unwrap();
         u.try_pull().unwrap().unwrap()
     }
 
     #[test]
     fn join_test() {
-        let (u, v) = super::channel::<()>();
+        let (u, v) = channel::<()>();
         assert_eq!(u.join((), |_, _| ()).unwrap(), None);
         assert_eq!(v.join((), |_, _| ()).unwrap(), Some(()));
 
-        let (u, v) = super::channel::<()>();
+        let (u, v) = channel::<()>();
         assert_eq!(v.join((), |_, _| ()).unwrap(), None);
         assert_eq!(u.join((), |_, _| ()).unwrap(), Some(()))
     }
@@ -463,7 +463,7 @@ mod test {
         let mut left: Vec<Handshake<usize>> = vec![];
         let mut right: Vec<Handshake<usize>> = vec![];
         for _ in 0..N {
-            let (u, v) = super::channel::<usize>();
+            let (u, v) = channel::<usize>();
             left.push(u);
             right.push(v)
         }
