@@ -20,7 +20,7 @@ pub struct Handshake<T> {
 /// 
 /// # Examples
 /// 
-/// ### Join
+/// Using join:
 /// 
 /// ```
 /// let (u, v) = handshake::channel::<u8>();
@@ -36,7 +36,7 @@ pub struct Handshake<T> {
 /// }
 /// ```
 /// 
-/// ### Push - Pull
+/// Using push and pull:
 /// 
 /// ```
 /// let (u, v) = handshake::channel::<u8>();
