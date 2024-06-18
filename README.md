@@ -7,7 +7,7 @@ Symmetric one time use channels.
 Allows each end of the handshake to send or receive information for bi-directional movement of data:
 
 ```rs
-let (u, v) = handshake::channel::<Box<str>>();
+let (u, v) = oneshot_handshake::channel::<Box<str>>();
 let combine = |x, y| format!("{} {}!", x, y);
 
 '_task_a: {
