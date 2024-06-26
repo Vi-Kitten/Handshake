@@ -100,6 +100,14 @@ pub fn channel<T>() -> (Handshake<T>, Handshake<T>) {
 
 
 impl<T> Handshake<T> {
+    pub fn wrap(value: T) -> Handshake<T> {
+        Handshake { common: unsafe {
+            NonNull::new_unchecked(Box::into_raw(
+                Box::new(Mutex::new(Some(Inner::Set(value))))
+            ))
+        } }
+    }
+
     /// Pulls and pushes at the same time, garunteeing consumption of `self`.
     /// 
     /// If `self` is [`Unset`] `f` will not be ran and `value` will be stored returning `Ok(None)`,
@@ -455,6 +463,26 @@ mod test {
     }
 
     #[test]
+    fn wrap_drop_test() {
+        #[derive(Debug)]
+        struct Loud<'a> {
+            flag: &'a mut bool
+        }
+
+        impl<'a> Drop for Loud<'a> {
+            fn drop(&mut self) {
+                *self.flag = true;
+            }
+        }
+
+        let mut dropped = false;
+        let u = Handshake::wrap(Loud { flag: &mut dropped });
+        drop(u);
+
+        assert_eq!(dropped, true);
+    }
+
+    #[test]
     fn pull_test() {
         let (u, v) = channel::<()>();
         assert_eq!(u.try_pull(), Ok(Err(v)));
@@ -515,6 +543,12 @@ mod test {
 
         let (u, v) = channel::<()>();
         v.try_push(()).unwrap().unwrap();
+        u.try_pull().unwrap().unwrap()
+    }
+
+    #[test]
+    fn wrap_pull_test() {
+        let u = Handshake::wrap(());
         u.try_pull().unwrap().unwrap()
     }
 
