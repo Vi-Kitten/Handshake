@@ -100,6 +100,22 @@ pub fn channel<T>() -> (Handshake<T>, Handshake<T>) {
 
 
 impl<T> Handshake<T> {
+
+    /// Creates a channel that has already been pushed to.
+    /// 
+    /// The expression:
+    /// ```
+    /// let _ = oneshot_handshake::Handshake::<u8>::wrap(1);
+    /// ```
+    /// 
+    /// Is the same as the expression:
+    /// ```
+    /// let _ = {
+    ///     let (u, v) = oneshot_handshake::channel::<u8>();
+    ///     u.try_push(1).unwrap().unwrap();
+    ///     v
+    /// };
+    /// ```
     pub fn wrap(value: T) -> Handshake<T> {
         Handshake { common: unsafe {
             NonNull::new_unchecked(Box::into_raw(
